@@ -1,4 +1,6 @@
-/distribution_AA.json
-/distribution_output.json
-/distribution_output.txt
-/uniref50.fasta
+/*.json
+/*.txt
+/*.fasta
+/clusters
+/logs
+/tmp
