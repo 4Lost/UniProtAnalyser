@@ -19,7 +19,7 @@ def run_easy_cluster(input_fasta, tmp_dir, output_dir, min_cluster_size=1):
         os.makedirs(output_dir)
     
     print("[1/2] Running MMseqs2 easy-cluster...")
-    aa_cluster = easy_cluster(input_fasta, output_dir, tmp_dir, min_seq_id=0.9)
+    aa_cluster = easy_cluster(input_fasta, output_dir, tmp_dir, min_seq_id=0.7)
 
     print("[2/2] Saving cluster representatives to FASTA...")
     fasta_path = os.path.join(output_dir, "cluster_reps.fasta")
