@@ -4,8 +4,8 @@ from collections import defaultdict
 import numpy as np
 from scipy.stats import gaussian_kde
 
-# name = "uniref50.fasta"
-name = "cluster_reps.fasta"
+name = "uniref50.fasta"
+# name = "cluster_reps.fasta"
 
 
 def readFasta(filename):
@@ -93,7 +93,7 @@ def generate_kde_points(length_distribution, num_points=500, crop=True, threshol
     x_points = np.linspace(
         length_array.min(), length_array.max(), num_points * 5)
     y_points = kde(x_points)
-    y_points_normalized = y_points / y_points.max()
+    y_points_normalized = y_points / y_points.sum()
 
     # Convert to dict with string keys
     points = {f"{x:.2f}": float(y) for x, y in zip(x_points, y_points_normalized)}
