@@ -2,6 +2,9 @@ import json
 from collections import defaultdict
 import math
 import numpy as np
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
+N_WORKERS = 12
 
 FILE_NAME = "aa-uniref50.fasta"
 #FILE_NAME = "exampleDatasetSmall.fasta"
@@ -208,6 +211,7 @@ SCALES = {
   "WEBA780101": {"A":0.89, "R":0.88, "N":0.89, "D":0.87, "C":0.85, "Q":0.82, "E":0.84, "G":0.92, "H":0.83, "I":0.76, "L":0.73, "K":0.97, "M":0.74, "F":0.52, "P":0.82, "S":0.96, "T":0.92, "W":0.2, "Y":0.49, "V":0.85}
 }
 
+
 # /-- Import --/
 def readFasta(filename):
     sequences = {}
@@ -231,48 +235,229 @@ def readFasta(filename):
             sequences[seq_id] = "".join(seq_list)
     return sequences
 
-# /-- Distribution Stats --/
-def getDistributionStats(sequences):
-    lengths = np.array([len(seq) for seq in sequences.values()])
 
-    return {
-        "min": int(lengths.min()),
-        "max": int(lengths.max()),
-        "mean": float(lengths.mean()),
-        "variance": float(lengths.var()),
-        "std_dev": float(lengths.std()),
-        "median": float(np.median(lengths)),
-    }
+# /-- Analyser --/
+def analyseChunk(workerId):
+    print(f"Worker {workerId + 1} started")
+    sequences = loadForWorker(workerId).items()
 
-# /-- AA? Distributions --/
-def getAA__Distribution(sequences):
-    distribution = defaultdict(int)
-    positionalDistribution = defaultdict(lambda: defaultdict(int))
-    lengthDistribution = defaultdict(int)
+    print(f"Worker {workerId + 1}: Sequences loaded")
+    perSequenceResults = {feature: {} for feature in SCALE_IDS}
+    aaResults = (defaultdict(int), defaultdict(lambda: defaultdict(int)), defaultdict(int)) # (distribution, positional distribution, length distribution)
 
-    for key in sequences:
-        length = len(sequences[key])
+    for seqId, seq in sequences:
+        for feature in SCALE_IDS:
+            value = calculateValueForFeature(seq, feature)
+            aaResults = calculateAAValues(seq, aaResults)
+            if value is None:
+                continue
+            perSequenceResults[feature][seqId] = value
+        
+        if len(perSequenceResults['mutability']) % 2000 == 0: 
+            print(f"Worker {workerId + 1}: {len(perSequenceResults['mutability'])}/{len(sequences)}")
+            saveWorkerFeatureValues(perSequenceResults)
+            perSequenceResults = {feature: {} for feature in SCALE_IDS}
+            saveWorkerAAValues(perSequenceResults)
+            aaResults = (defaultdict(int), defaultdict(lambda: defaultdict(int)), defaultdict(int))
 
-        for position in range(length):
-            letter = sequences[key][position]
+    saveWorkerFeatureValues(workerId, perSequenceResults)
+    saveWorkerAAValues(workerId, perSequenceResults)
+    print(f"Worker {workerId + 1} finished")
 
-            distribution[letter] += 1
-            positionalDistribution[position][letter] += 1
-        lengthDistribution[length] += 1
+
+# /-- Analyser -- Helper --/
+def initWorker(sequences):
+    items = list(sequences.items())
+    chunk_size = math.ceil(len(items) / N_WORKERS)
+    sequenceChunks = [items[i:i+chunk_size] for i in range(0, len(items), chunk_size)]
+
+    for workerId in range(N_WORKERS):
+        sequenceChunkDict = {}
+        for seqId, seq in sequenceChunks[workerId]:
+            sequenceChunkDict[seqId] = seq
+        with open(f"worker_{workerId}.json", "w") as fout:
+            json.dump(sequenceChunkDict, fout, indent=2)
+        for feature in SCALE_IDS:
+            with open(f"worker_{workerId}_{feature}.jsonl", "w") as f:
+                pass
+
+
+def loadForWorker(workerId):
+    with open(f"worker_{workerId}.json", "r") as f:
+        sequenceChunkDict = json.load(f)
+    return sequenceChunkDict
+
+
+def saveWorkerFeatureValues(workerId, perSequenceResults):
+    for feature in SCALE_IDS:
+        with open(f"worker_{workerId}_{feature}.jsonl", "a") as f:
+            for seqId, value in perSequenceResults[feature].items():
+                json.dump({seqId: value}, f)
+                f.write("\n")
+
+
+def saveWorkerAAValues(workerId, aaResults):
+    (distribution, positionalDistribution, lengthDistribution) = aaResults
     
-    distribution = normalizeDistribution(distribution)
-    positionalDistribution = {
-        str(pos): normalizeDistribution(counts)
-        for pos, counts in positionalDistribution.items()
+    with open(f"worker_{workerId}_distribution.jsonl", "a") as f:
+        f.write(json.dumps(distribution) + "\n")
+    
+    with open(f"worker_{workerId}_positionalDistribution.jsonl", "a") as f:
+        f.write(json.dumps(positionalDistribution) + "\n")
+    
+    with open(f"worker_{workerId}_lengthDistribution.jsonl", "a") as f:
+        f.write(json.dumps(lengthDistribution) + "\n")
+
+
+# /-- Analyser -- Scales --/
+def calculateValueForFeature(sequence, scalesCat):
+    sequence = sequence.upper()
+    meanPerScale = {}
+
+    for id in SCALE_IDS[scalesCat]:
+        avg = avgOverScale(sequence, SCALES[id])
+        if avg is not None:
+            meanPerScale[id] = avg
+    
+    if not meanPerScale:
+        return None
+    
+    return sum(meanPerScale.values()) / len(meanPerScale)
+
+
+def avgOverScale(sequence, dict):
+    values = [dict[a] for a in sequence if a in dict]
+    
+    if not values:
+        return None
+    
+    return sum(values) / len(values)
+
+
+# /-- Analyser -- Amino Acid --/
+def calculateAAValues(sequence, aaResults):
+    (distribution, positionalDistribution, lengthDistribution) = aaResults
+    length = len(sequence)
+
+    for position in range(length):
+        letter = sequence[position]
+
+        distribution[letter] += 1
+        positionalDistribution[position][letter] += 1
+    lengthDistribution[length] += 1
+
+    return (distribution, positionalDistribution, lengthDistribution)
+
+
+# /-- Stats --/
+# /-- Stats -- Feature --/
+def processFeature(feature):
+    print(f"Worker for {feature} started")
+    data = loadFeatureValues(feature)
+    
+    print(f"{feature} loaded")
+    values = list(data.values())
+    arr = np.array(values, dtype=float)
+    length = len(arr)
+
+    jsonData = {
+        "stats": {
+            "min": float(np.min(arr)),
+            "max": float(np.max(arr)),
+            "mean": float(np.mean(arr)),
+            "std_dev": float(np.std(arr)),
+            "median": float(np.median(arr)),
+        },
+        "perSequence": data,
     }
 
-    return [lengthDistribution, distribution, positionalDistribution]
+    print(f"Saving {feature}")
+    saveFeatureValues(jsonData, feature)
+    print(f"Saved {feature}")
 
-def normalizeDistribution(dist):
-    total = sum(dist.values())
-    if total == 0:
-        return {k: 0.0 for k in dist}
-    return {k: (v / total) * 100 for k, v in dist.items()}
+
+def loadFeatureValues(feature):
+    data = {}
+    for workerId in range(N_WORKERS):
+        with open(f"worker_{workerId}_{feature}.jsonl", "r") as f:
+            for lineNumber, line in enumerate(f):
+                line = line.strip()
+                if line:
+                    try:
+                        d = json.loads(line)
+                        data.update(d)
+                    except json.JSONDecodeError as e:
+                        print(f"Error in worker {workerId + 1}'s {feature} at line {lineNumber}: {line}")
+                        raise e
+    return data
+
+
+def saveFeatureValues(jsonData, feature):
+    with open(f"distribution_scales_{feature}.json", "w") as fout:
+        json.dump(jsonData, fout, indent=2)
+
+
+# /-- Stats -- Feature --/
+def processAA(feature):
+    print(f"Worker for AA started")
+    (distribution, positionalDistribution, lengthDistribution) = loadAAValues(feature)
+
+    for pos in positionalDistribution:
+        positionalDistribution[pos] = normalizeDistribution(positionalDistribution[pos])
+
+    print(f"AA loaded")
+
+    jsonData = {
+        "lengthKde": lengthDistribution,
+        "lengthStats": getLengthStats(lengthDistribution),
+        "distribution": normalizeDistribution(distribution),
+        "positionalDistribution": positionalDistribution,
+    }
+
+    print(f"Saving {feature}")
+    with open(f"distribution_AA.json", "w") as fout:
+        json.dump(jsonData, fout, indent=2)
+    print(f"Saved {feature}")
+
+
+def loadAAValues(feature):
+    dist = defaultdict(int)
+    posDist = defaultdict(lambda: defaultdict(int))
+    lenDist = defaultdict(int)
+    for workerId in range(N_WORKERS):
+        with open(f"worker_{workerId}_{feature}.jsonl", "r") as f:
+            for lineNumber, line in enumerate(f):
+                line = line.strip()
+                if line:
+                    try:
+                        data = json.loads(line)
+                        dist = assignDist(data, dist)
+                        posDist = assignPosDist(data, posDist)
+                        lenDist = assignLenDist(data, lenDist)
+                    except json.JSONDecodeError as e:
+                        print(f"Error in worker {workerId + 1}'s {feature} at line {lineNumber}: {line}")
+                        raise e
+    return (dist, posDist, lenDist)
+
+
+def assignDist(data, dist):
+    for letter in data:
+        dist[letter] += data[letter]
+    return dist
+
+
+def assignPosDist(data, posDist):
+    for pos in data:
+        for letter in data[pos]:
+            posDist[pos][letter] += data[pos][letter]
+    return posDist
+
+
+def assignLenDist(data, lenDist):
+    for length in data:
+        lenDist[length] += data[length]
+    return lenDist
+
 
 def getLengthStats(length_distribution):
     lengths = np.array(list(length_distribution.keys()))
@@ -293,125 +478,36 @@ def getLengthStats(length_distribution):
         ),
     }
 
-# /-- Scales --/
-def calculateValueForFeature(sequence, scalesCat):
-    sequence = sequence.upper()
-    meanPerScale = {}
 
-    for id in SCALE_IDS[scalesCat]:
-        avg = avgOverScale(sequence, getDict(id))
-        if avg is not None:
-            meanPerScale[id] = avg
-    
-    if not meanPerScale:
-        return None
-    
-    return sum(meanPerScale.values()) / len(meanPerScale)
+def normalizeDistribution(dist):
+    total = sum(dist.values())
+    if total == 0:
+        return {k: 0.0 for k in dist}
+    return {k: (v / total) * 100 for k, v in dist.items()}
 
 
-def avgOverScale(sequence, dict):
-    values = [dict[a] for a in sequence if a in dict]
-    
-    if not values:
-        return None
-    
-    return sum(values) / len(values)
+# /-- Main --/
+def main():
+    print("Read Sequences")
+    sequences = readFasta(FILE_NAME)
+
+    print("\nCalculate Scales & AA Distribution\n")
+    initWorker(sequences)
+    with ProcessPoolExecutor(max_workers=N_WORKERS) as ex:
+        futures = [ex.submit(analyseChunk, workerId) for workerId in range(N_WORKERS)]
+        for future in as_completed(futures):
+            future.result()
+
+    print("\nGenerate Scales & AA Stats and Save Results\n")
+    with ProcessPoolExecutor(max_workers=9) as ex:
+        futures = [ex.submit(processFeature, feature) for feature in SCALE_IDS] + [ex.submit(processAA)]
+
+        for future in futures:
+            future.result()
+
+    print(f"Done! All Results written!")
 
 
-def getDict(id: str):
-    values = SCALES[id]
-    
-    return {aa: float(values[aa]) for aa in AMINO_ORDER}
-
-
-# Welford's algorithm
-def runningStats(newValue, currentStats):
-    (min, max, count, mean, m2) = currentStats
-    if newValue < min: min = newValue
-    if newValue > max: max = newValue
-    count += 1
-    delta = newValue - mean
-    mean += delta / count
-    delta2 = newValue - mean
-    m2 += delta * delta2
-    return (min, max, count, mean, m2)
-
-
-def jsonAppendSequenceScores(fileName, data):
-    with open(fileName, 'r+') as file:
-        file_data = json.load(file)
-        file_data["perSequence"].append(data)
-        file.seek(0)
-        json.dump(file_data, file, indent=2)
-
-
-# /-- Script --/
-print("Read Sequences")
-sequences = readFasta(FILE_NAME)
-
-#print("\nCalculate Distribution Stats\n")
-#amount = len(sequences)
-#distributionStats = getDistributionStats(sequences)
-#
-#print("\nCalculate AA? Distribution\n")
-#protDist = getAA__Distribution(sequences)
-#lengthStats = getLengthStats(protDist[0])
-#
-#data_to_save = {
-#    "numSequences": amount,
-#    "distributionStats": distributionStats,
-#    "AA-??": {
-#        "lengthKde": protDist[0],
-#        "lengthStats": lengthStats,
-#        "distribution": protDist[1],
-#        "positionalDistribution": protDist[2],
-#    },
-#}
-#output_file = "distribution_AA.json"
-#with open(output_file, "w") as f:
-#    json.dump(data_to_save, f, indent=2)
-
-#print(f"Done! Results written to {output_file}")
-
-print("\nCalculate Scales Distribution\n")
-
-# Setup Scales
-currentStats = {}
-first = {}
-for feature in SCALE_IDS:
-    with open(f"distribution_scales_{feature}.json", 'w') as file:
-        json.dump({"stats": "tbd","perSequence": []}, file, indent=2)
-    currentStats[feature] = (0.0, 0.0, 0, 0.0, 0.0)  # min, max, count, mean, M2
-    first[feature] = True
-    
-# Calculate Scales
-for seq in sequences:
-    if currentStats["hydroscales"][2] % 10000 == 0: print(f"{currentStats['hydroscales'][2]}/{len(sequences)}")
-    for feature in SCALE_IDS:
-        meanOverScales = calculateValueForFeature(seq, feature)
-        if meanOverScales is None:
-            continue
-        if first[feature]:
-            currentStats[feature] = (meanOverScales, meanOverScales, 0, 0.0, 0.0)
-            first[feature] = False
-        currentStats[feature] = runningStats(meanOverScales, currentStats[feature])
-        jsonAppendSequenceScores(f"distribution_scales_{feature}.json", {seq: meanOverScales})
-
-# Save Scale Stats
-for feature in SCALE_IDS:
-    with open(f"distribution_scales_{feature}.json", 'r+') as file:
-        file_data = json.load(file)
-        file_data.update({"stats": {
-            "min": currentStats[feature][0],
-            "max": currentStats[feature][1],
-            "mean": currentStats[feature][3],
-            "stdDev": math.sqrt(currentStats[feature][4] / currentStats[feature][2])
-            }})
-        file.seek(0)
-        json.dump(file_data, file, indent=2)
-    
-print(f"Done! All Results written!")
-
-
-
+if __name__ == "__main__":
+    main()
 
