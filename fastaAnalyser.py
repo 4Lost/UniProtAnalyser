@@ -3,6 +3,7 @@ from collections import defaultdict
 import math
 import numpy as np
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from multiprocessing import Queue
 
 N_WORKERS = 12
 
@@ -12,7 +13,7 @@ FILE_NAME = "aa-uniref50.fasta"
 # /-- aaindex Properties --/
 AMINO_ORDER = "ARNDCQEGHILKMFPSTWYV"
 FEATURE_SCALES = {
-  "hydroscales": {"A":0.14358913378319937, "R":-0.22636644169555728, "N":-0.2092242521622241, "D":-0.26473494857761126, "C":0.32931700684958476, "Q":-0.22784290932653717, "E":-0.2809654937064575, "G":-0.05574240859408246, "H":-0.0005694593018983487, "I":0.7394661181561407, "L":0.6727226738424296, "K":-0.21494542772443354, "M":0.4557449156253738, "F":0.76326618347678, "P":0.17041140131272003, "S":-0.1371795756074432, "T":-0.005209995452296512, "W":0.7069106029546537, "Y":0.42808513792254455, "V":0.5120052529094391}, 
+  "hydrophobicity": {"A":0.14358913378319937, "R":-0.22636644169555728, "N":-0.2092242521622241, "D":-0.26473494857761126, "C":0.32931700684958476, "Q":-0.22784290932653717, "E":-0.2809654937064575, "G":-0.05574240859408246, "H":-0.0005694593018983487, "I":0.7394661181561407, "L":0.6727226738424296, "K":-0.21494542772443354, "M":0.4557449156253738, "F":0.76326618347678, "P":0.17041140131272003, "S":-0.1371795756074432, "T":-0.005209995452296512, "W":0.7069106029546537, "Y":0.42808513792254455, "V":0.5120052529094391}, 
   "freeEnergie": {"A":0.4126725685975706, "R":0.3976573097883449, "N":0.5376667922318099, "D":0.5498713549024209, "C":0.42070550702821014, "Q":0.4305812297852952, "E":0.3931500062963445, "G":0.6419613997574174, "H":0.44649404914002194, "I":0.32993634469537864, "L":0.37253441201227444, "K":0.4297431453605854, "M":0.35660015135749124, "F":0.378033855997586, "P":1.0, "S":0.4656483843114838, "T":0.4145832124838414, "W":0.3879077058059451, "Y":0.38068244136095986, "V":0.3340384406240167}, 
   "stability": {"A":0.3480633629471504, "R":0.34399187846000145, "N":0.2073746228973096, "D":0.12041433302943207, "C":0.5407968873115502, "Q":0.28641797103574157, "E":0.27396796651284466, "G":0.038922249361399465, "H":0.33801074196451336, "I":0.8616284467863063, "L":0.7118262537208974, "K":0.38132182563329614, "M":0.5233023271400615, "F":0.8570013100720518, "P":0.34592244625918867, "S":0.28260349645510846, "T":0.4461459771266177, "W":0.8491195216807631, "Y":0.7288116232206955, "V":0.7828956685436782}, 
   "volume": {"A":0.36602623291450886, "R":0.8238919538564463, "N":0.5371914111807752, "D":0.4837632806855753, "C":0.48213006245979795, "Q":0.6464190909849685, "E":0.617329380563794, "G":0.231896382746156, "H":0.6882483635889526, "I":0.6993281023998736, "L":0.6977921936967111, "K":0.7286885100866508, "M":0.7189429802894034, "F":0.8328210272765146, "P":0.47900880512587585, "S":0.391636744280506, "T":0.5098512092286421, "W":0.9792804979957268, "Y":0.8766364342249389, "V":0.5940467373991879}, 
@@ -24,11 +25,10 @@ FEATURE_SCALES = {
 
 
 # /-- Import --/
-def readFasta(filename):
-    sequences = {}
+def streamFasta(filename):
     with open(filename, "r") as file:
         seq_id = None
-        seq_list = []
+        seq_parts = []
 
         for line in file:
             line = line.strip()
@@ -37,27 +37,38 @@ def readFasta(filename):
                 continue
             if line.startswith(">"):
                 if seq_id:
-                    sequences[seq_id] = "".join(seq_list)
+                    yield seq_id, "".join(seq_parts)
                 seq_id = line[1:].split()[0]
-                seq_list = []
+                seq_parts = []
             else:
-                seq_list.append(line)
+                seq_parts.append(line)
         if seq_id:
-            sequences[seq_id] = "".join(seq_list)
-    return sequences
+            yield seq_id, "".join(seq_parts)
+
+def producer(queue):
+    for seqId, seq in streamFasta(FILE_NAME):
+        queue.put((seqId, seq))
+
+    # stop signals
+    for _ in range(N_WORKERS):
+        queue.put(None)
 
 
 # /-- Analyser --/
-def analyseChunk(workerId):
+def analyseWorker(workerId, queue):
     print(f"Worker {workerId + 1} started")
-    count = 0
-    sequences = loadForWorker(workerId).items()
-
-    print(f"Worker {workerId + 1}: Sequences loaded")
     perSequenceResults = {feature: {} for feature in FEATURE_SCALES}
     aaResults = (defaultdict(int), defaultdict(lambda: defaultdict(int)), defaultdict(int)) # (distribution, positional distribution, length distribution)
+    count = 0
+    
+    while True:
+        item = queue.get()
 
-    for seqId, seq in sequences:
+        if item is None:
+            break
+
+        seqId, seq = item
+
         for feature in FEATURE_SCALES:
             value = calculateValueForFeature(seq.upper(), FEATURE_SCALES[feature])
             if value is None:
@@ -68,7 +79,7 @@ def analyseChunk(workerId):
         count += 1
         
         if count % 2000 == 0: 
-            print(f"Worker {workerId + 1}: {count}/{len(sequences)}")
+            print(f"Worker {workerId + 1}: {count}")
             saveWorkerFeatureValues(workerId, perSequenceResults)
             perSequenceResults = {feature: {} for feature in FEATURE_SCALES}
             saveWorkerAAValues(workerId, aaResults)
@@ -80,28 +91,6 @@ def analyseChunk(workerId):
 
 
 # /-- Analyser -- Helper --/
-def initWorker(sequences):
-    items = list(sequences.items())
-    chunk_size = math.ceil(len(items) / N_WORKERS)
-    sequenceChunks = [items[i:i+chunk_size] for i in range(0, len(items), chunk_size)]
-
-    for workerId in range(N_WORKERS):
-        sequenceChunkDict = {}
-        for seqId, seq in sequenceChunks[workerId]:
-            sequenceChunkDict[seqId] = seq
-        with open(f"worker_{workerId}.json", "w") as fout:
-            json.dump(sequenceChunkDict, fout, indent=2)
-        for feature in FEATURE_SCALES:
-            with open(f"worker_{workerId}_{feature}.jsonl", "w") as f:
-                pass
-
-
-def loadForWorker(workerId):
-    with open(f"worker_{workerId}.json", "r") as f:
-        sequenceChunkDict = json.load(f)
-    return sequenceChunkDict
-
-
 def saveWorkerFeatureValues(workerId, perSequenceResults):
     for feature in FEATURE_SCALES:
         with open(f"worker_{workerId}_{feature}.jsonl", "a") as f:
@@ -307,22 +296,28 @@ def normalizeDistribution(dist):
 
 # /-- Main --/
 def main():
-    print("Read Sequences")
-    sequences = readFasta(FILE_NAME)
+    from multiprocessing import Process, Queue
+    print("Start streaming analysis")
+    queue = Queue(maxsize=5000)  # important: backpressure
 
-    print("\nCalculate Scales & AA Distribution\n")
-    initWorker(sequences)
-    with ProcessPoolExecutor(max_workers=N_WORKERS) as ex:
-        futures = [ex.submit(analyseChunk, workerId) for workerId in range(N_WORKERS)]
-        for future in as_completed(futures):
-            future.result()
+    # start workers
+    workers = []
+    for workerId in range(N_WORKERS):
+        p = Process(target=analyseWorker, args=(workerId, queue))
+        p.start()
+        workers.append(p)
+
+    # run producer in main process
+    producer(queue)
+
+    # wait for workers
+    for p in workers:
+        p.join()
 
     print("\nGenerate Scales & AA Stats and Save Results\n")
-    with ProcessPoolExecutor(max_workers=9) as ex:
-        futures = [ex.submit(processFeature, feature) for feature in FEATURE_SCALES] + [ex.submit(processAA)]
-
-        for future in futures:
-            future.result()
+    for feature in FEATURE_SCALES:
+        processFeature(feature)
+    processAA()
 
     print(f"Done! All Results written!")
 

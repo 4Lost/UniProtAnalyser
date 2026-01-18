@@ -78,35 +78,54 @@ class CustomEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
-# /-- Scales --/
-def getScaleValuesForFeature(scalesCat):
-    return {scale: getDict(scale) for scale in SCALE_IDS[scalesCat]}
+# /-- Scale Calculation --/
+def calculateFeatureScale(feature):
+    scales = []
 
+    for scale in SCALE_IDS[feature]:
+        scales.append(normalizeScale(getDict(scale)))
+
+    values = {}
+    for aa in AMINO_ORDER:
+        aaSum = 0
+        for scale in scales:
+            aaSum += scale[aa]
+        values.update({aa: aaSum/len(scales)})
+
+    return CompactDict({aa: float(values[aa]) for aa in AMINO_ORDER})
+
+def normalizeScale(scale):
+    maxValue = max(abs(v) for v in scale.values())
+
+    return {aa: v / maxValue for aa, v in scale.items()}
 
 def getDict(id: str):
     values = aaindex1[id].values
     
-    return CompactDict({aa: float(values[aa]) for aa in AMINO_ORDER})
+    return {aa: float(values[aa]) for aa in AMINO_ORDER}
 
 
-allScales = []
-for feature in SCALE_IDS:
-    for scale in SCALE_IDS[feature]:
-        allScales.append(scale)
+# /-- Main --/
+def main():
+    featureScales = {}
+    for feature in SCALE_IDS:
+        featureScales.update({feature: calculateFeatureScale(feature)})
 
-dataToSave = {scale: getDict(scale) for scale in allScales}
+    outputFile = "scales.json"
+    with open(outputFile, "w") as f:
+        f.write("{\n")
 
-outputFile = "scales.json"
-with open(outputFile, "w") as f:
-    f.write("{\n")
+        items = list(featureScales.items())
+        for i, (scale, aa_map) in enumerate(items):
+            compact_inner = json.dumps(aa_map, separators=(", ", ":"))
+            comma = ", " if i < len(items) - 1 else ""
+            f.write(f'  "{scale}": {compact_inner}{comma}\n')
 
-    items = list(dataToSave.items())
-    for i, (scale, aa_map) in enumerate(items):
-        compact_inner = json.dumps(aa_map, separators=(", ", ":"))
-        comma = ", " if i < len(items) - 1 else ""
-        f.write(f'  "{scale}": {compact_inner}{comma}\n')
-
-    f.write("}\n")
+        f.write("}\n")
 
 
-print(f"Done! All Results written!")
+    print(f"Done! All Results written!")
+
+if __name__ == "__main__":
+    main()
+
