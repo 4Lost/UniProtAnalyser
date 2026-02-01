@@ -52,12 +52,12 @@ MUTABILITY_SCALES = [
         "DAYM780201", "JOND920102", "WEBA780101",
     ]
 SCALE_IDS = {
-        "hydroscales": HYDROPHOBICITY_SCALES,
+        "hydrophobicity": HYDROPHOBICITY_SCALES,
         "freeEnergie": FREE_ENERGIE_SCALES,
         "stability": STABILITY_SCALES,
         "volume": VOLUME_SCALES,
-        "alpha-helix": ALPHA_HELIX_SCALES,
-        "beta-sheet": BETA_SHEET_SCALES,
+        "alphaHelix": ALPHA_HELIX_SCALES,
+        "betaSheet": BETA_SHEET_SCALES,
         "coil": COIL_SCALES,
         "mutability": MUTABILITY_SCALES,
     }

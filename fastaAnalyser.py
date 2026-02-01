@@ -1,6 +1,8 @@
+import glob
 import json
 from collections import defaultdict
 import math
+import os
 import numpy as np
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from multiprocessing import Queue
@@ -17,8 +19,8 @@ FEATURE_SCALES = {
   "freeEnergie": {"A":0.4126725685975706, "R":0.3976573097883449, "N":0.5376667922318099, "D":0.5498713549024209, "C":0.42070550702821014, "Q":0.4305812297852952, "E":0.3931500062963445, "G":0.6419613997574174, "H":0.44649404914002194, "I":0.32993634469537864, "L":0.37253441201227444, "K":0.4297431453605854, "M":0.35660015135749124, "F":0.378033855997586, "P":1.0, "S":0.4656483843114838, "T":0.4145832124838414, "W":0.3879077058059451, "Y":0.38068244136095986, "V":0.3340384406240167}, 
   "stability": {"A":0.3480633629471504, "R":0.34399187846000145, "N":0.2073746228973096, "D":0.12041433302943207, "C":0.5407968873115502, "Q":0.28641797103574157, "E":0.27396796651284466, "G":0.038922249361399465, "H":0.33801074196451336, "I":0.8616284467863063, "L":0.7118262537208974, "K":0.38132182563329614, "M":0.5233023271400615, "F":0.8570013100720518, "P":0.34592244625918867, "S":0.28260349645510846, "T":0.4461459771266177, "W":0.8491195216807631, "Y":0.7288116232206955, "V":0.7828956685436782}, 
   "volume": {"A":0.36602623291450886, "R":0.8238919538564463, "N":0.5371914111807752, "D":0.4837632806855753, "C":0.48213006245979795, "Q":0.6464190909849685, "E":0.617329380563794, "G":0.231896382746156, "H":0.6882483635889526, "I":0.6993281023998736, "L":0.6977921936967111, "K":0.7286885100866508, "M":0.7189429802894034, "F":0.8328210272765146, "P":0.47900880512587585, "S":0.391636744280506, "T":0.5098512092286421, "W":0.9792804979957268, "Y":0.8766364342249389, "V":0.5940467373991879}, 
-  "alpha-helix": {"A":0.7442034901304289, "R":0.49965192974183026, "N":0.2922649694733262, "D":0.39245804612261465, "C":0.3041156248788227, "Q":0.5808341080712011, "E":0.7501169192456335, "G":0.07290246184485562, "H":0.4961365750670697, "I":0.4896085869580447, "L":0.7216557552587273, "K":0.5799675060484489, "M":0.794644214563068, "F":0.5549011221246851, "P":-0.03535290560938736, "S":0.25080549451114953, "T":0.2969457164912867, "W":0.5408691741732791, "Y":0.28905098834816, "V":0.4830710076268101}, 
-  "beta-sheet": {"A":0.34956591911092894, "R":0.460550677798243, "N":0.22256084553921518, "D":0.18452618634543372, "C":0.5099790895042989, "Q":0.4453882634893641, "E":0.11317872915496889, "G":0.3274437242442998, "H":0.3872233691659867, "I":0.9199532659318971, "L":0.5989115344257007, "K":0.27558096039030416, "M":0.6135421560885467, "F":0.7066307354658885, "P":0.09494029912392414, "S":0.3628039141726376, "T":0.5799367947829297, "W":0.6295171062240904, "Y":0.7336981819919552, "V":0.8903504557212697}, 
+  "alphaHelix": {"A":0.7442034901304289, "R":0.49965192974183026, "N":0.2922649694733262, "D":0.39245804612261465, "C":0.3041156248788227, "Q":0.5808341080712011, "E":0.7501169192456335, "G":0.07290246184485562, "H":0.4961365750670697, "I":0.4896085869580447, "L":0.7216557552587273, "K":0.5799675060484489, "M":0.794644214563068, "F":0.5549011221246851, "P":-0.03535290560938736, "S":0.25080549451114953, "T":0.2969457164912867, "W":0.5408691741732791, "Y":0.28905098834816, "V":0.4830710076268101}, 
+  "betaSheet": {"A":0.34956591911092894, "R":0.460550677798243, "N":0.22256084553921518, "D":0.18452618634543372, "C":0.5099790895042989, "Q":0.4453882634893641, "E":0.11317872915496889, "G":0.3274437242442998, "H":0.3872233691659867, "I":0.9199532659318971, "L":0.5989115344257007, "K":0.27558096039030416, "M":0.6135421560885467, "F":0.7066307354658885, "P":0.09494029912392414, "S":0.3628039141726376, "T":0.5799367947829297, "W":0.6295171062240904, "Y":0.7336981819919552, "V":0.8903504557212697}, 
   "coil": {"A":0.09663551689300753, "R":0.2678770347284752, "N":0.6591846813607345, "D":0.4775261018204119, "C":0.27029350887007075, "Q":0.1909684984175682, "E":0.15314799173070323, "G":0.6665124673407554, "H":0.36393670117956045, "I":-0.08149077849430328, "L":-0.05275135589796503, "K":0.3039878566804798, "M":-0.1346607990280012, "F":0.0003032555159309797, "P":0.9318164083836635, "S":0.5001012727728252, "T":0.3513196863356348, "W":0.07066763248303932, "Y":0.18765062236002322, "V":-0.13569056048760558}, 
   "mutability": {"A":0.8394984282043829, "R":0.7005642770375807, "N":0.935471554028255, "D":0.8076649092189944, "C":0.46720358906849135, "Q":0.7524464644790849, "E":0.7617643564712345, "G":0.580491892462965, "H":0.7086617314344656, "I":0.7934216484762722, "L":0.5042077479375525, "K":0.6777650210486031, "M":0.7530836433744573, "F":0.42598335312599045, "P":0.5863325894099859, "S":0.9617377032363953, "T":0.8622880399307542, "W":0.18472971296482607, "Y":0.4128250719264721, "V":0.7553781011236005}
 }
@@ -146,16 +148,38 @@ def processFeature(feature):
     print(f"{feature} loaded")
     values = list(data.values())
     arr = np.array(values, dtype=float)
+    
+    n = len(values)
+    min_val = np.min(arr)
+    max_val = np.max(arr)
+    std_dev = np.std(arr)
+
+    bandwidth = 0.75 * std_dev * n**(-1/5)
+
+    kdePoints = []
+    range_val = max_val - min_val
+    
+    for i in range(200):
+        x = min_val + (i / 100) * range_val
+        y = 0
+        for value in values:
+            y += math.exp(-((x - value) ** 2) / (2 * bandwidth ** 2))
+        
+        y /= n * bandwidth * math.sqrt(2 * math.pi)
+        kdePoints.append((float(x), float(y)))
+    
+    sumKDE = sum(point[1] for point in kdePoints)
+    normalizedKDE = [(point[0], point[1] / sumKDE) for point in kdePoints]
 
     jsonData = {
         "stats": {
-            "min": float(np.min(arr)),
-            "max": float(np.max(arr)),
+            "min": float(min_val),
+            "max": float(max_val),
             "mean": float(np.mean(arr)),
-            "std_dev": float(np.std(arr)),
+            "stdDev": float(std_dev),
             "median": float(np.median(arr)),
         },
-        "perSequence": data,
+        "values": normalizedKDE
     }
 
     print(f"Saving {feature}")
@@ -195,7 +219,7 @@ def processAA():
     print(f"AA loaded")
 
     jsonData = {
-        "lengthKde": lengthDistribution,
+        "lengthKde": calculateLengthKDE(lengthDistribution),
         "lengthStats": getLengthStats(lengthDistribution),
         "distribution": normalizeDistribution(distribution),
         "positionalDistribution": positionalDistribution,
@@ -251,6 +275,47 @@ def loadAAValues():
     return (dist, posDist, lenDist)
 
 
+def calculateLengthKDE(lenDist):
+    lenDist = dict(sorted(lenDist.items()))
+    amount = sum(lenDist.values())
+    x = 0.05
+
+    max_key = max((k for k, v in lenDist.items() if v / amount > x), default=None)
+
+    if max_key == None:
+        max_key = max(lenDist.keys())
+
+    cutoff = {}
+    for k in lenDist:
+        if float(k) <= float(max_key):
+            cutoff[k] = lenDist[k]
+
+    values = []
+
+    for key, value in cutoff.items():
+        for i in range(value):
+            values.append(float(key))
+
+    valMin = values[0]
+    valMax = values[len(values) - 1]
+    valRange = valMax - valMin
+    bandwidth = 20
+
+    kdePoints = []
+    for i in range(200):
+        x = valMin + (i / 100) * valRange
+        y = 0
+        for value in values:
+            y += math.exp(-math.pow(x - value, 2) / (2 * bandwidth * bandwidth))
+      
+        y /= len(values) * bandwidth * math.sqrt(2 * math.pi)
+        kdePoints.append((x, y))
+    
+    sumKDE = sum(point[1] for point in kdePoints)
+    normalizedKDE = [(point[0], point[1] / sumKDE) for point in kdePoints]
+    return normalizedKDE
+
+
 def assignDist(data, dist):
     for letter in data:
         dist[letter] += data[letter]
@@ -283,7 +348,7 @@ def getLengthStats(length_distribution):
         "min": int(np.min(lengths)),
         "max": int(np.max(lengths)),
         "mean": float(mean),
-        "std_dev": float(np.sqrt(variance)),
+        "stdDev": float(np.sqrt(variance)),
     }
 
 
@@ -292,6 +357,11 @@ def normalizeDistribution(dist):
     if total == 0:
         return {k: 0.0 for k in dist}
     return {k: (v / total) * 100 for k, v in dist.items()}
+
+def cleanup_worker_files():
+    for file in glob.glob("worker_*_*.jsonl"):
+        os.remove(file)
+        print(f"Removed {file}")
 
 
 # /-- Main --/
@@ -320,6 +390,7 @@ def main():
     processAA()
 
     print(f"Done! All Results written!")
+    cleanup_worker_files()
 
 
 if __name__ == "__main__":
