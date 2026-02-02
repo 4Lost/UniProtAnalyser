@@ -69,13 +69,13 @@ def analyseWorker(workerId, queue):
         if item is None:
             break
 
-        seqId, seq = item
+        _, seq = item
 
         for feature in FEATURE_SCALES:
             value = calculateValueForFeature(seq.upper(), FEATURE_SCALES[feature])
             if value is None:
                 continue
-            perSequenceResults[feature][seqId] = value
+            perSequenceResults[feature][seq] = value
         
         aaResults = calculateAAValues(seq, aaResults)
         count += 1
@@ -96,8 +96,8 @@ def analyseWorker(workerId, queue):
 def saveWorkerFeatureValues(workerId, perSequenceResults):
     for feature in FEATURE_SCALES:
         with open(f"worker_{workerId}_{feature}.jsonl", "a") as f:
-            for seqId, value in perSequenceResults[feature].items():
-                json.dump({seqId: value}, f)
+            for seq, value in perSequenceResults[feature].items():
+                json.dump({seq: value}, f)
                 f.write("\n")
 
 
@@ -152,15 +152,15 @@ def processFeature(feature):
     n = len(values)
     min_val = np.min(arr)
     max_val = np.max(arr)
-    std_dev = np.std(arr)
+    stdDev = np.std(arr)
 
-    bandwidth = 0.75 * std_dev * n**(-1/5)
+    bandwidth = 0.75 * stdDev * n**(-1/5)
 
     kdePoints = []
-    range_val = max_val - min_val
+    valRange = max_val - min_val
     
     for i in range(200):
-        x = min_val + (i / 100) * range_val
+        x = min_val + (i / 200) * valRange
         y = 0
         for value in values:
             y += math.exp(-((x - value) ** 2) / (2 * bandwidth ** 2))
@@ -168,15 +168,17 @@ def processFeature(feature):
         y /= n * bandwidth * math.sqrt(2 * math.pi)
         kdePoints.append((float(x), float(y)))
     
-    sumKDE = sum(point[1] for point in kdePoints)
+    sumKDE = sum(point[1] for point in kdePoints) * (valRange / 200)
     normalizedKDE = [(point[0], point[1] / sumKDE) for point in kdePoints]
+
+    mean = np.mean(arr)
 
     jsonData = {
         "stats": {
             "min": float(min_val),
             "max": float(max_val),
-            "mean": float(np.mean(arr)),
-            "stdDev": float(std_dev),
+            "mean": float(mean),
+            "stdDev": float(stdDev),
             "median": float(np.median(arr)),
         },
         "values": normalizedKDE
@@ -186,20 +188,18 @@ def processFeature(feature):
     saveFeatureValues(jsonData, feature)
     print(f"Saved {feature}")
 
+    return mean, stdDev
+
 
 def loadFeatureValues(feature):
     data = {}
     for workerId in range(N_WORKERS):
         with open(f"worker_{workerId}_{feature}.jsonl", "r") as f:
-            for lineNumber, line in enumerate(f):
+            for line in f:
                 line = line.strip()
                 if line:
-                    try:
-                        d = json.loads(line)
-                        data.update(d)
-                    except json.JSONDecodeError as e:
-                        print(f"Error in worker {workerId + 1}'s {feature} at line {lineNumber}: {line}")
-                        raise e
+                    d = json.loads(line)
+                    data.update(d)
     return data
 
 
@@ -218,9 +218,11 @@ def processAA():
 
     print(f"AA loaded")
 
+    mean, stdDev, stats = getLengthStats(lengthDistribution)
+
     jsonData = {
         "lengthKde": calculateLengthKDE(lengthDistribution),
-        "lengthStats": getLengthStats(lengthDistribution),
+        "lengthStats": stats,
         "distribution": normalizeDistribution(distribution),
         "positionalDistribution": positionalDistribution,
     }
@@ -230,6 +232,8 @@ def processAA():
         json.dump(jsonData, fout, indent=2)
     print(f"Saved AA")
 
+    return mean, stdDev
+
 
 def loadAAValues():
     dist = defaultdict(int)
@@ -238,39 +242,27 @@ def loadAAValues():
 
     for workerId in range(N_WORKERS):
         with open(f"worker_{workerId}_distribution.jsonl", "r") as f:
-            for lineNumber, line in enumerate(f):
+            for line in f:
                 line = line.strip()
                 if line:
-                    try:
-                        data = json.loads(line)
-                        dist = assignDist(data, dist)
-                    except json.JSONDecodeError as e:
-                        print(f"Error in worker {workerId + 1}'s dirstibution at line {lineNumber}: {line}")
-                        raise e
+                    data = json.loads(line)
+                    dist = assignDist(data, dist)
                     
     for workerId in range(N_WORKERS):
         with open(f"worker_{workerId}_positionalDistribution.jsonl", "r") as f:
-            for lineNumber, line in enumerate(f):
+            for line in f:
                 line = line.strip()
                 if line:
-                    try:
-                        data = json.loads(line)
-                        posDist = assignPosDist(data, posDist)
-                    except json.JSONDecodeError as e:
-                        print(f"Error in worker {workerId + 1}'s positional dirstibution at line {lineNumber}: {line}")
-                        raise e
+                    data = json.loads(line)
+                    posDist = assignPosDist(data, posDist)
                     
     for workerId in range(N_WORKERS):
         with open(f"worker_{workerId}_lengthDistribution.jsonl", "r") as f:
-            for lineNumber, line in enumerate(f):
+            for line in f:
                 line = line.strip()
                 if line:
-                    try:
-                        data = json.loads(line)
-                        lenDist = assignLenDist(data, lenDist)
-                    except json.JSONDecodeError as e:
-                        print(f"Error in worker {workerId + 1}'s length dirstibution at line {lineNumber}: {line}")
-                        raise e
+                    data = json.loads(line)
+                    lenDist = assignLenDist(data, lenDist)
                     
     return (dist, posDist, lenDist)
 
@@ -303,7 +295,7 @@ def calculateLengthKDE(lenDist):
 
     kdePoints = []
     for i in range(200):
-        x = valMin + (i / 100) * valRange
+        x = valMin + (i / 200) * valRange
         y = 0
         for value in values:
             y += math.exp(-math.pow(x - value, 2) / (2 * bandwidth * bandwidth))
@@ -311,7 +303,7 @@ def calculateLengthKDE(lenDist):
         y /= len(values) * bandwidth * math.sqrt(2 * math.pi)
         kdePoints.append((x, y))
     
-    sumKDE = sum(point[1] for point in kdePoints)
+    sumKDE = sum(point[1] for point in kdePoints) * (valRange / 200)
     normalizedKDE = [(point[0], point[1] / sumKDE) for point in kdePoints]
     return normalizedKDE
 
@@ -344,11 +336,13 @@ def getLengthStats(length_distribution):
     mean = np.average(lengths, weights=counts)
     variance = np.average((lengths - mean)**2, weights=counts)
 
-    return {
+    stdDev = np.sqrt(variance)
+
+    return mean, stdDev, {
         "min": int(np.min(lengths)),
         "max": int(np.max(lengths)),
         "mean": float(mean),
-        "stdDev": float(np.sqrt(variance)),
+        "stdDev": float(stdDev),
     }
 
 
@@ -358,10 +352,131 @@ def normalizeDistribution(dist):
         return {k: 0.0 for k in dist}
     return {k: (v / total) * 100 for k, v in dist.items()}
 
+
 def cleanup_worker_files():
     for file in glob.glob("worker_*_*.jsonl"):
         os.remove(file)
         print(f"Removed {file}")
+
+
+# /-- Surprise Metric --/
+def featureProducer(feature, queue):
+    for seqId, seq in streamFeature(feature):
+        queue.put((seqId, seq))
+
+    # stop signals
+    for _ in range(N_WORKERS):
+        queue.put(None)
+
+
+def streamFeature(feature):
+    for workerId in range(N_WORKERS):
+        with open(f"worker_{workerId}_{feature}.jsonl", "r") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    d = json.loads(line)
+                    seq_id, value = next(iter(d.items()))
+                    yield seq_id, value
+
+
+def featureProducer(feature, queue):
+    for seqId, seq in streamFeature(feature):
+        queue.put((seqId, seq))
+
+    # stop signals
+    queue.put(None)
+
+
+def surpriseMetric(queues, means, stdDevs):
+    run = True
+    seqSave = ''
+    perSequenceResults = {}
+    classStats = {'': 0, 'extremly surprising': 0, 'highly surprising': 0, 'surprising': 0, 'slightly surprising': 0, 'ordinary': 0}
+    count = 0
+
+    while run:
+        values = []
+        for i, queue in enumerate(queues):
+            item = queue.get()
+
+            if item is None:
+                run = False
+                break
+
+            seq, value = item
+            
+            if i == 0:
+                seqSave = seq
+
+            if seqSave != seq:
+                print('Error: ${seqSqve} != ${seq}')
+
+            values.append(value)
+
+        if run == False:
+            break
+        
+        values.append(len(seq))
+        count += 1
+
+        surpriseClass, classification = classifySequence(values, means, stdDevs)
+        perSequenceResults[seq] = classification
+
+        classStats[surpriseClass] += 1
+
+        if count % 2000 == 0: 
+            print(f"SurpriseMetric: {count}")
+            saveSurpriseMetric(perSequenceResults)
+            perSequenceResults = {}
+
+    saveSurpriseMetric(perSequenceResults)
+    saveMetricStats(classStats)
+
+
+def saveSurpriseMetric(perSequenceResults):
+    with open(f"surpriseMetric.jsonl", "a") as f:
+        for seq, value in perSequenceResults.items():
+            json.dump({seq: value}, f)
+            f.write("\n")
+
+
+def saveMetricStats(surpriseMetricStats):
+    with open(f"surpriseMetric.json", "w") as f:
+        json.dump(surpriseMetricStats, f, indent=2)
+
+
+def classifySequence(values, means, stdDevs):
+    z_scores = {'class': '', 'surpriseFactor': 0}
+    totalFactor = 0
+
+    if len(values) < len(means):
+        return '', z_scores
+
+    for i, feature in enumerate(FEATURE_SCALES):
+        val = abs(means[i] - values[i]) / stdDevs[i]
+        z_scores[feature] = val
+        totalFactor += val
+    
+    val = abs(means[8] - values[8]) / stdDevs[8]
+    z_scores['length'] = val
+    totalFactor += val
+
+    totalFactor = totalFactor / 9
+    z_scores['class'] = totalFactor
+
+    if totalFactor >= 5.0:
+        z_scores['class'] = 'extremly surprising'
+    elif totalFactor >= 4:
+        z_scores['class'] = 'highly surprising'
+    elif totalFactor >= 3:
+        z_scores['class'] = 'surprising'
+    elif totalFactor >= 2.5:
+        z_scores['class'] = 'slightly surprising'
+    else:
+        z_scores['class'] = 'ordinary'
+
+    return z_scores['class'], z_scores
 
 
 # /-- Main --/
@@ -384,10 +499,35 @@ def main():
     for p in workers:
         p.join()
 
+    means = []
+    stdDevs = []
+
     print("\nGenerate Scales & AA Stats and Save Results\n")
     for feature in FEATURE_SCALES:
-        processFeature(feature)
-    processAA()
+        mean, stdDev = processFeature(feature)
+        means.append(mean)
+        stdDevs.append(stdDev)
+    mean, stdDev = processAA()
+    means.append(mean)
+    stdDevs.append(stdDev)
+
+    print("\nGenerate Surprise Metric\n")
+
+    queues = [Queue(maxsize=2000), Queue(maxsize=2000), Queue(maxsize=2000), Queue(maxsize=2000), Queue(maxsize=2000), Queue(maxsize=2000), Queue(maxsize=2000), Queue(maxsize=2000)]
+    workers = []
+    for number, feature in enumerate(FEATURE_SCALES):
+        p = Process(target=featureProducer, args=(feature, queues[number]))
+        p.start()
+        workers.append(p)
+    workers.append(p)
+
+    # run producer in main process
+    surpriseMetric(queues, means, stdDevs)
+
+    # wait for workers
+    for p in workers:
+        p.join()
+
 
     print(f"Done! All Results written!")
     cleanup_worker_files()
