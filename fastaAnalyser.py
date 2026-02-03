@@ -9,8 +9,8 @@ from multiprocessing import Queue
 
 N_WORKERS = 12
 
-FILE_NAME = "aa-uniref50.fasta"
-#FILE_NAME = "exampleDatasetSmall.fasta"
+#FILE_NAME = "aa-uniref50.fasta"
+FILE_NAME = "exampleDatasetSmall.fasta"
 
 # /-- aaindex Properties --/
 AMINO_ORDER = "ARNDCQEGHILKMFPSTWYV"
@@ -167,9 +167,17 @@ def processFeature(feature):
         
         y /= n * bandwidth * math.sqrt(2 * math.pi)
         kdePoints.append((float(x), float(y)))
-    
-    sumKDE = sum(point[1] for point in kdePoints) * (valRange / 200)
-    normalizedKDE = [(point[0], point[1] / sumKDE) for point in kdePoints]
+        
+    area = 0.0
+    for i in range(len(kdePoints) - 1):
+        x1, y1 = kdePoints[i]
+        x2, y2 = kdePoints[i + 1]
+        area += (x2 - x1) * (y1 + y2) / 2.0
+
+    if area > 0:
+        normalizedKDE = [(x, y / area) for x, y in kdePoints]
+    else:
+        normalizedKDE = kdePoints
 
     mean = np.mean(arr)
 
@@ -302,9 +310,18 @@ def calculateLengthKDE(lenDist):
       
         y /= len(values) * bandwidth * math.sqrt(2 * math.pi)
         kdePoints.append((x, y))
-    
-    sumKDE = sum(point[1] for point in kdePoints) * (valRange / 200)
-    normalizedKDE = [(point[0], point[1] / sumKDE) for point in kdePoints]
+        
+    area = 0.0
+    for i in range(len(kdePoints) - 1):
+        x1, y1 = kdePoints[i]
+        x2, y2 = kdePoints[i + 1]
+        area += (x2 - x1) * (y1 + y2) / 2.0
+
+    if area > 0:
+        normalizedKDE = [(x, y / area) for x, y in kdePoints]
+    else:
+        normalizedKDE = kdePoints
+
     return normalizedKDE
 
 
@@ -392,7 +409,6 @@ def surpriseMetric(queues, means, stdDevs):
     run = True
     seqSave = ''
     perSequenceResults = {}
-    classStats = {'': 0, 'extremly surprising': 0, 'highly surprising': 0, 'surprising': 0, 'slightly surprising': 0, 'ordinary': 0}
     count = 0
 
     while run:
@@ -420,15 +436,13 @@ def surpriseMetric(queues, means, stdDevs):
         values.append(len(seq))
         count += 1
 
-        surpriseClass, classification = classifySequence(values, means, stdDevs)
+        classification = surpriseFactor(values, means, stdDevs)
         perSequenceResults[seq] = classification
-
-        classStats[surpriseClass] += 1
 
         if count % 2000 == 0: 
             print(f"SurpriseMetric: {count}")
-            saveSurpriseMetric(perSequenceResults)
-            perSequenceResults = {}
+
+    classStats, perSequenceResults = classifySequences(perSequenceResults)
 
     saveSurpriseMetric(perSequenceResults)
     saveMetricStats(classStats)
@@ -446,7 +460,7 @@ def saveMetricStats(surpriseMetricStats):
         json.dump(surpriseMetricStats, f, indent=2)
 
 
-def classifySequence(values, means, stdDevs):
+def surpriseFactor(values, means, stdDevs):
     z_scores = {'class': '', 'surpriseFactor': 0}
     totalFactor = 0
 
@@ -462,21 +476,54 @@ def classifySequence(values, means, stdDevs):
     z_scores['length'] = val
     totalFactor += val
 
-    totalFactor = totalFactor / 9
-    z_scores['class'] = totalFactor
+    z_scores['surpriseFactor'] = totalFactor / 9
 
-    if totalFactor >= 5.0:
-        z_scores['class'] = 'extremly surprising'
-    elif totalFactor >= 4:
-        z_scores['class'] = 'highly surprising'
-    elif totalFactor >= 3:
-        z_scores['class'] = 'surprising'
-    elif totalFactor >= 2.5:
-        z_scores['class'] = 'slightly surprising'
-    else:
-        z_scores['class'] = 'ordinary'
+    return z_scores
 
-    return z_scores['class'], z_scores
+def classifySequences(perSequenceResults):
+    surpriseFactors = [result['surpriseFactor'] for result in perSequenceResults.values()]
+    surpriseFactors.sort(reverse=True)
+    
+    total_count = len(surpriseFactors)
+    if total_count == 0:
+        return {}, perSequenceResults
+    
+    # Compute percentile thresholds from CURRENT data
+    a_threshold = surpriseFactors[int(total_count * 0.015)]  # 1.5%
+    b_threshold = surpriseFactors[int(total_count * 0.045)]  # 4.5%
+    c_threshold = surpriseFactors[int(total_count * 0.15)]   # 15%
+    d_threshold = surpriseFactors[int(total_count * 0.2)]    # 20%
+    
+    # Initialize class statistics
+    classStats = {
+        'extremly surprising': 0,
+        'highly surprising': 0,
+        'surprising': 0,
+        'slightly surprising': 0,
+        'ordinary': 0
+    }
+    
+    # Classify each sequence
+    for seq_id, z_scores in perSequenceResults.items():
+        totalFactor = z_scores['surpriseFactor']
+        
+        if totalFactor >= a_threshold:
+            z_scores['class'] = 'extremly surprising'
+            classStats['extremly surprising'] += 1
+        elif totalFactor >= b_threshold:
+            z_scores['class'] = 'highly surprising'
+            classStats['highly surprising'] += 1
+        elif totalFactor >= c_threshold:
+            z_scores['class'] = 'surprising'
+            classStats['surprising'] += 1
+        elif totalFactor >= d_threshold:
+            z_scores['class'] = 'slightly surprising'
+            classStats['slightly surprising'] += 1
+        else:
+            z_scores['class'] = 'ordinary'
+            classStats['ordinary'] += 1
+    
+    return classStats, perSequenceResults
 
 
 # /-- Main --/
