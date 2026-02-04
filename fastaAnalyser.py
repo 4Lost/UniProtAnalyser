@@ -9,8 +9,8 @@ from multiprocessing import Queue
 
 N_WORKERS = 12
 
-#FILE_NAME = "uniref50.fasta"
-FILE_NAME = "exampleDatasetSmall.fasta"
+FILE_NAME = "uniref50.fasta"
+#FILE_NAME = "exampleDatasetSmall.fasta"
 
 # /-- aaindex Properties --/
 AMINO_ORDER = "ARNDCQEGHILKMFPSTWYV"
@@ -176,7 +176,7 @@ def processFeature(feature):
 
     mean = np.mean(arr)
 
-    jsonData = roundData({
+    jsonData = {
         "stats": {
             "min": float(min_val),
             "max": float(max_val),
@@ -185,7 +185,7 @@ def processFeature(feature):
             "median": float(np.median(arr)),
         },
         "values": normalizedKDE
-    })
+    }
 
     print(f"Saving {feature}")
     saveFeatureValues(jsonData, feature)
@@ -222,12 +222,12 @@ def processAA():
 
     mean, stdDev, stats = getLengthStats(lengthDistribution)
 
-    jsonData = roundData({
+    jsonData = {
         "lengthKde": calculateLengthKDE(lengthDistribution),
         "lengthStats": stats,
         "distribution": normalizeDistribution(distribution),
         "positionalDistribution": positionalDistribution,
-    })
+    }
 
     print(f"Saving AA")
     with open(f"distribution_AA.json", "w") as fout:
@@ -491,16 +491,6 @@ def classifySequences(z_scores):
         z_scores['class'] = 'ordinary'
     
     return z_scores['class'], z_scores
-
-
-def roundData(data):
-    if isinstance(data, dict):
-        return {k: roundData(v) for k,v in data.items()}
-    elif isinstance(data, list):
-        return [roundData(x) for x in data]
-    elif isinstance(data, (int, float)):
-        return round(data, 4)
-    return data
 
 
 # /-- Main --/
