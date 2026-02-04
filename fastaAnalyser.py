@@ -9,7 +9,7 @@ from multiprocessing import Queue
 
 N_WORKERS = 12
 
-#FILE_NAME = "aa-uniref50.fasta"
+#FILE_NAME = "uniref50.fasta"
 FILE_NAME = "exampleDatasetSmall.fasta"
 
 # /-- aaindex Properties --/
@@ -26,7 +26,7 @@ FEATURE_SCALES = {
 }
 
 
-# /-- Import --/
+# /-- Load Fasta --/
 def streamFasta(filename):
     with open(filename, "r") as file:
         seq_id = None
@@ -51,12 +51,11 @@ def producer(queue):
     for seqId, seq in streamFasta(FILE_NAME):
         queue.put((seqId, seq))
 
-    # stop signals
     for _ in range(N_WORKERS):
         queue.put(None)
 
 
-# /-- Analyser --/
+# /-- Calculate Values --/
 def analyseWorker(workerId, queue):
     print(f"Worker {workerId + 1} started")
     perSequenceResults = {feature: {} for feature in FEATURE_SCALES}
@@ -92,7 +91,6 @@ def analyseWorker(workerId, queue):
     print(f"Worker {workerId + 1} finished")
 
 
-# /-- Analyser -- Helper --/
 def saveWorkerFeatureValues(workerId, perSequenceResults):
     for feature in FEATURE_SCALES:
         with open(f"worker_{workerId}_{feature}.jsonl", "a") as f:
@@ -114,7 +112,6 @@ def saveWorkerAAValues(workerId, aaResults):
         f.write(json.dumps(lengthDistribution) + "\n")
 
 
-# /-- Analyser -- Scales --/
 def calculateValueForFeature(sequence, dict):
     values = [dict[a] for a in sequence if a in dict]
     
@@ -124,7 +121,6 @@ def calculateValueForFeature(sequence, dict):
     return sum(values) / len(values)
 
 
-# /-- Analyser -- Amino Acid --/
 def calculateAAValues(sequence, aaResults):
     (distribution, positionalDistribution, lengthDistribution) = aaResults
     length = len(sequence)
@@ -139,8 +135,7 @@ def calculateAAValues(sequence, aaResults):
     return (distribution, positionalDistribution, lengthDistribution)
 
 
-# /-- Stats --/
-# /-- Stats -- Feature --/
+# /-- Clean Stats --/
 def processFeature(feature):
     print(f"Worker for {feature} started")
     data = loadFeatureValues(feature)
@@ -181,7 +176,7 @@ def processFeature(feature):
 
     mean = np.mean(arr)
 
-    jsonData = {
+    jsonData = roundData({
         "stats": {
             "min": float(min_val),
             "max": float(max_val),
@@ -190,7 +185,7 @@ def processFeature(feature):
             "median": float(np.median(arr)),
         },
         "values": normalizedKDE
-    }
+    })
 
     print(f"Saving {feature}")
     saveFeatureValues(jsonData, feature)
@@ -216,7 +211,6 @@ def saveFeatureValues(jsonData, feature):
         json.dump(jsonData, fout, indent=2)
 
 
-# /-- Stats -- Feature --/
 def processAA():
     print(f"Worker for AA started")
     (distribution, positionalDistribution, lengthDistribution) = loadAAValues()
@@ -228,12 +222,12 @@ def processAA():
 
     mean, stdDev, stats = getLengthStats(lengthDistribution)
 
-    jsonData = {
+    jsonData = roundData({
         "lengthKde": calculateLengthKDE(lengthDistribution),
         "lengthStats": stats,
         "distribution": normalizeDistribution(distribution),
         "positionalDistribution": positionalDistribution,
-    }
+    })
 
     print(f"Saving AA")
     with open(f"distribution_AA.json", "w") as fout:
@@ -397,19 +391,19 @@ def streamFeature(feature):
                     yield seq_id, value
 
 
-def featureProducer(feature, queue):
-    for seqId, seq in streamFeature(feature):
-        queue.put((seqId, seq))
-
-    # stop signals
-    queue.put(None)
-
-
 def surpriseMetric(queues, means, stdDevs):
     run = True
     seqSave = ''
     perSequenceResults = {}
     count = 0
+    
+    classStats = {
+        'extremly surprising': 0,
+        'highly surprising': 0,
+        'surprising': 0,
+        'slightly surprising': 0,
+        'ordinary': 0
+    }
 
     while run:
         values = []
@@ -436,13 +430,15 @@ def surpriseMetric(queues, means, stdDevs):
         values.append(len(seq))
         count += 1
 
-        classification = surpriseFactor(values, means, stdDevs)
+        surpriseClass, classification = classifySequences(surpriseFactor(values, means, stdDevs))
         perSequenceResults[seq] = classification
+        classStats[surpriseClass] += 1
 
         if count % 2000 == 0: 
             print(f"SurpriseMetric: {count}")
+            saveSurpriseMetric(perSequenceResults)
+            perSequenceResults = {}
 
-    classStats, perSequenceResults = classifySequences(perSequenceResults)
 
     saveSurpriseMetric(perSequenceResults)
     saveMetricStats(classStats)
@@ -480,72 +476,53 @@ def surpriseFactor(values, means, stdDevs):
 
     return z_scores
 
-def classifySequences(perSequenceResults):
-    surpriseFactors = [result['surpriseFactor'] for result in perSequenceResults.values()]
-    surpriseFactors.sort(reverse=True)
+def classifySequences(z_scores):
+    totalFactor = z_scores['surpriseFactor']
     
-    total_count = len(surpriseFactors)
-    if total_count == 0:
-        return {}, perSequenceResults
+    if totalFactor >= 5:
+        z_scores['class'] = 'extremly surprising'
+    elif totalFactor >= 4:
+        z_scores['class'] = 'highly surprising'
+    elif totalFactor >= 3:
+        z_scores['class'] = 'surprising'
+    elif totalFactor >= 2.5:
+        z_scores['class'] = 'slightly surprising'
+    else:
+        z_scores['class'] = 'ordinary'
     
-    # Compute percentile thresholds from CURRENT data
-    a_threshold = surpriseFactors[int(total_count * 0.015)]  # 1.5%
-    b_threshold = surpriseFactors[int(total_count * 0.045)]  # 4.5%
-    c_threshold = surpriseFactors[int(total_count * 0.15)]   # 15%
-    d_threshold = surpriseFactors[int(total_count * 0.2)]    # 20%
-    
-    # Initialize class statistics
-    classStats = {
-        'extremly surprising': 0,
-        'highly surprising': 0,
-        'surprising': 0,
-        'slightly surprising': 0,
-        'ordinary': 0
-    }
-    
-    # Classify each sequence
-    for seq_id, z_scores in perSequenceResults.items():
-        totalFactor = z_scores['surpriseFactor']
-        
-        if totalFactor >= a_threshold:
-            z_scores['class'] = 'extremly surprising'
-            classStats['extremly surprising'] += 1
-        elif totalFactor >= b_threshold:
-            z_scores['class'] = 'highly surprising'
-            classStats['highly surprising'] += 1
-        elif totalFactor >= c_threshold:
-            z_scores['class'] = 'surprising'
-            classStats['surprising'] += 1
-        elif totalFactor >= d_threshold:
-            z_scores['class'] = 'slightly surprising'
-            classStats['slightly surprising'] += 1
-        else:
-            z_scores['class'] = 'ordinary'
-            classStats['ordinary'] += 1
-    
-    return classStats, perSequenceResults
+    return z_scores['class'], z_scores
+
+
+def roundData(data):
+    if isinstance(data, dict):
+        return {k: roundData(v) for k,v in data.items()}
+    elif isinstance(data, list):
+        return [roundData(x) for x in data]
+    elif isinstance(data, (int, float)):
+        return round(data, 4)
+    return data
 
 
 # /-- Main --/
 def main():
+    # Load Fasta
     from multiprocessing import Process, Queue
     print("Start streaming analysis")
     queue = Queue(maxsize=5000)  # important: backpressure
 
-    # start workers
+    # Calculate Values
     workers = []
     for workerId in range(N_WORKERS):
         p = Process(target=analyseWorker, args=(workerId, queue))
         p.start()
         workers.append(p)
 
-    # run producer in main process
     producer(queue)
 
-    # wait for workers
     for p in workers:
         p.join()
 
+    # Clean Stats
     means = []
     stdDevs = []
 
@@ -558,6 +535,7 @@ def main():
     means.append(mean)
     stdDevs.append(stdDev)
 
+    # Classsify Surprise Metric
     print("\nGenerate Surprise Metric\n")
 
     queues = [Queue(maxsize=2000), Queue(maxsize=2000), Queue(maxsize=2000), Queue(maxsize=2000), Queue(maxsize=2000), Queue(maxsize=2000), Queue(maxsize=2000), Queue(maxsize=2000)]
@@ -566,7 +544,6 @@ def main():
         p = Process(target=featureProducer, args=(feature, queues[number]))
         p.start()
         workers.append(p)
-    workers.append(p)
 
     # run producer in main process
     surpriseMetric(queues, means, stdDevs)
