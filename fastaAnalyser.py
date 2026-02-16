@@ -9,8 +9,8 @@ from multiprocessing import Queue
 
 N_WORKERS = 12
 
-#FILE_NAME = "uniref50.fasta"
-FILE_NAME = "correct.fasta"
+FILE_NAME = "UniRef50.fasta"
+#FILE_NAME = "correct.fasta"
 #FILE_NAME = "exampleDatasetSmall.fasta"
 
 # /-- aaindex Properties --/
@@ -208,7 +208,7 @@ def loadFeatureValues(feature):
 
 
 def saveFeatureValues(jsonData, feature):
-    with open(f"distribution_scales_{feature}.json", "w") as fout:
+    with open(f"UniRef50-distribution_scales_{feature}.json", "w") as fout:
         json.dump(jsonData, fout, indent=2)
 
 
@@ -231,7 +231,7 @@ def processAA():
     }
 
     print(f"Saving AA")
-    with open(f"distribution_AA.json", "w") as fout:
+    with open(f"UniRef50-distribution_AA.json", "w") as fout:
         json.dump(jsonData, fout, indent=2)
     print(f"Saved AA")
 
@@ -453,7 +453,7 @@ def saveSurpriseMetric(perSequenceResults):
 
 
 def saveMetricStats(surpriseMetricStats):
-    with open(f"surpriseMetric.json", "w") as f:
+    with open(f"UniRef50-surpriseMetric.json", "w") as f:
         json.dump(surpriseMetricStats, f, indent=2)
 
 

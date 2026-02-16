@@ -9,9 +9,8 @@ from multiprocessing import Queue
 
 N_WORKERS = 12
 
-#FILE_NAME = "uniref50.fasta"
-FILE_NAME = "correct.fasta"
-#FILE_NAME = "exampleDatasetSmall.fasta"
+#FILE_NAME = "UniRef50.fasta"
+FILE_NAME = "SCL.fasta"
 
 # /-- aaindex Properties --/
 AMINO_ORDER = "ARNDCQEGHILKMFPSTWYV"
